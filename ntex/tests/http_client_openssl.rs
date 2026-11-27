@@ -427,6 +427,7 @@ fn trusting_connector() -> SslConnector {
 /// - Serve HTTPS with the self-signed test certificate.
 /// - Send a request with `Client::new()` and assert it fails with a certificate
 ///   verification error.
+#[cfg(not(all(windows, feature = "schannel")))]
 #[ntex::test]
 async fn test_default_client_rejects_untrusted_certificate() {
     let srv = verify_server();

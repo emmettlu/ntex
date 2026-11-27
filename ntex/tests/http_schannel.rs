@@ -1,4 +1,4 @@
-#![cfg(all(windows, feature = "openssl"))]
+#![cfg(all(windows, feature = "schannel"))]
 use std::sync::{Arc, Mutex, atomic::AtomicUsize, atomic::Ordering};
 use std::{future::ready, io};
 
@@ -11,13 +11,13 @@ use ntex::http::test::{self, server as test_server};
 use ntex::http::{self, HttpService, Method, Request, Response, StatusCode, Version, body, h1};
 use ntex::io::{Filter, Io, Layer};
 use ntex::server::TlsError;
+use ntex::server::schannel::{Certificate, SchannelFilter, ServerConfig};
 use ntex::service::{IntoService, Service, cfg::SharedCfg};
 use ntex::time::{Millis, Seconds, sleep, timeout};
 use ntex::util::{Bytes, BytesMut};
 use ntex::ws::{self, handshake_response};
 use ntex::{channel::oneshot, client, rt, web::error::InternalError};
 use ntex_tls::TlsConfig;
-use ntex_tls::schannel::{Certificate, SchannelFilter, ServerConfig, TlsAcceptor};
 
 /// Wraps an HTTP service in a Schannel TLS acceptor with the `protos` ALPN.
 fn schannel<F, S, St>(
@@ -32,9 +32,7 @@ where
     let cert = Certificate::from_pkcs12(include_bytes!("identity.pfx"), "ntex").unwrap();
     let config = ServerConfig::new(cert).unwrap().set_alpn_protocols(protos);
 
-    TlsAcceptor::new(config)
-        .map_err(TlsError::Tls)
-        .and_then(service.into_service().map_err(TlsError::Service))
+    http::schannel(config, service)
 }
 
 async fn load_body<S>(stream: S) -> Result<BytesMut, PayloadError>
@@ -599,6 +597,40 @@ async fn test_ssl_handshake_timeout() {
     let mut data = String::new();
     let _ = stream.read_to_string(&mut data);
     assert!(data.is_empty());
+}
+
+/// STATEMENT: With the `schannel` feature the default HTTP client uses Schannel,
+/// verifies peer certificates, and rejects an untrusted one.
+///
+/// HOW:
+/// - Serve HTTPS through Schannel with the self-signed test certificate.
+/// - Send a request with `Client::new()` and assert it fails for a reason other than missing TLS support.
+/// - Send the same request with a Schannel client that skips verification and assert success.
+#[ntex::test]
+async fn test_default_client_rejects_untrusted_certificate() {
+    let srv = test_server(async |_| {
+        schannel(
+            http::ALPN_PROTOS,
+            HttpService::new(async |_| Ok::<_, io::Error>(Response::Ok().build())),
+        )
+    });
+
+    // the default client has a secure connector and rejects the test certificate
+    let err = client::Client::new()
+        .get(srv.surl("/"))
+        .send()
+        .await
+        .unwrap_err();
+    assert!(!format!("{err:?}").contains("SslIsNotSupported"), "{err:?}");
+
+    let response = client::Client::builder()
+        .schannel(ntex::connect::schannel::ClientConfig::new().danger_accept_invalid_certs(true))
+        .build(SharedCfg::default())
+        .get(srv.surl("/"))
+        .send()
+        .await
+        .unwrap();
+    assert!(response.status().is_success());
 }
 
 /// STATEMENT: A secure WebSocket byte transport echoes binary data and close codes through Schannel.

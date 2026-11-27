@@ -5,6 +5,9 @@ use tls_openssl::ssl::{AlpnError, SslAcceptor, SslAcceptorBuilder};
 #[cfg(feature = "rustls")]
 use tls_rustls::ServerConfig as RustlsServerConfig;
 
+#[cfg(all(windows, feature = "schannel"))]
+use crate::server::schannel::ServerConfig as SchannelServerConfig;
+
 use crate::error::IntoFailure;
 use crate::http::{self, Request, Response, ResponseError};
 use crate::server::{Affinity, LoadBalancing, NoConfig, Server, ServerAppConfig, ServerBuilder};
@@ -400,6 +403,51 @@ where
         Ok(self)
     }
 
+    #[cfg(all(windows, feature = "schannel"))]
+    /// Use listener for accepting incoming tls connection requests through
+    /// Windows Schannel.
+    ///
+    /// This method sets alpn protocols to "h2" and "http/1.1"
+    pub fn listen_schannel(
+        self,
+        lst: net::TcpListener,
+        cfg: impl Into<SharedCfg>,
+        config: SchannelServerConfig,
+    ) -> io::Result<Self> {
+        self.listen_schannel_inner(lst, cfg.into(), schannel_config(config))
+    }
+
+    #[cfg(all(windows, feature = "schannel"))]
+    fn listen_schannel_inner(
+        mut self,
+        lst: net::TcpListener,
+        cfg: SharedCfg,
+        config: SchannelServerConfig,
+    ) -> io::Result<Self> {
+        let factory = self.factory.clone();
+        let addr = lst.local_addr().unwrap();
+
+        self.builder = self.builder.listen(
+            format!("ntex-web-schannel-service-{addr}"),
+            lst,
+            cfg,
+            async move |st| {
+                let state = st.clone();
+                http::schannel(
+                    config.clone(),
+                    fn_service(async move |req| {
+                        Ok(State {
+                            req,
+                            state: state.clone(),
+                        })
+                    })
+                    .and_then(http::HttpService::new(factory(st).await)),
+                )
+            },
+        )?;
+        Ok(self)
+    }
+
     /// The socket address to bind.
     ///
     /// To bind multiple addresses this method can be called multiple times.
@@ -480,6 +528,25 @@ where
         let sockets = self.bind2(addr)?;
         for lst in sockets {
             self = self.listen_rustls_inner(lst, cfg.clone(), config.clone())?;
+        }
+        Ok(self)
+    }
+
+    #[cfg(all(windows, feature = "schannel"))]
+    /// Start listening for incoming tls connections through Windows Schannel.
+    ///
+    /// This method sets alpn protocols to "h2" and "http/1.1"
+    pub fn bind_schannel<A: net::ToSocketAddrs>(
+        mut self,
+        addr: A,
+        config: &SchannelServerConfig,
+        cfg: impl Into<SharedCfg>,
+    ) -> io::Result<Self> {
+        let cfg = cfg.into();
+        let sockets = self.bind2(addr)?;
+        let config = schannel_config(config.clone());
+        for lst in sockets {
+            self = self.listen_schannel_inner(lst, cfg.clone(), config.clone())?;
         }
         Ok(self)
     }
@@ -577,6 +644,12 @@ where
     pub fn run(self) -> Server {
         self.builder.run()
     }
+}
+
+#[cfg(all(windows, feature = "schannel"))]
+/// Configure Schannel ALPN for "h2" and "http/1.1".
+fn schannel_config(config: SchannelServerConfig) -> SchannelServerConfig {
+    config.set_alpn_protocols(http::ALPN_PROTOS)
 }
 
 #[cfg(feature = "openssl")]

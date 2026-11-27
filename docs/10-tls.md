@@ -43,11 +43,14 @@ or directly from `ntex_tls`.
 | --- | --- | --- |
 | OpenSSL | `ntex/openssl` or `ntex-tls/openssl` | Platforms with OpenSSL; requires its native libraries and headers |
 | rustls | `ntex/rustls` or `ntex-tls/rustls` | Configured with rustls `ClientConfig` and `ServerConfig`; choose a crypto provider |
-| Schannel | Available automatically on Windows | Windows-native identities, trust policy, protocol versions and cipher suites |
+| Schannel | `ntex/schannel` (Windows only) | Windows-native identities, trust policy, protocol versions and cipher suites |
 
 Enable the corresponding feature to use OpenSSL or rustls. Neither is enabled
-by default in `ntex-tls`. Schannel is available automatically on Windows; you do
-not need its compatibility-only `schannel` feature.
+by default in `ntex-tls`. The Schannel types in `ntex::tls::schannel` are
+available automatically on Windows. Enable `ntex/schannel` to also get the
+ntex integrations: `ClientBuilder::schannel`, `WsClient::schannel`,
+`http::schannel`, and the `bind_schannel`/`listen_schannel` web-server helpers.
+The feature has no effect on other platforms.
 
 For an OpenSSL application, start with:
 
@@ -70,6 +73,15 @@ rustls-pemfile = "2"
 
 Here, `ntex-tls/rustls-ring` enables rustls and makes ring available to the
 X.509 helpers when no process-wide provider has been installed.
+
+For Schannel, enable `schannel`. Because it has no effect outside Windows, a
+cross-platform application can enable it together with `openssl` or `rustls`
+and use Schannel on Windows and the other backend elsewhere:
+
+```toml
+[dependencies]
+ntex = { version = "4", features = ["tokio", "schannel"] }
+```
 
 Both examples choose Tokio, but you can use another ntex-supported runtime
 without changing the TLS configuration.
@@ -475,7 +487,8 @@ clients, so use the section that matches your application.
 
 For HTTPS, install a secure connector on the client builder. Pass an OpenSSL
 configuration to `ClientBuilder::openssl(config)`. For rustls, use
-`ClientBuilder::rustls(config)`. Request and response handling stay the same:
+`ClientBuilder::rustls(config)`, and for Schannel (with `ntex/schannel`),
+`ClientBuilder::schannel(config)`. Request and response handling stay the same:
 
 ```rust,no_run
 async fn fetch(config: rustls::ClientConfig) -> Result<(), Box<dyn std::error::Error>> {
@@ -491,18 +504,19 @@ async fn fetch(config: rustls::ClientConfig) -> Result<(), Box<dyn std::error::E
 Build the client once and reuse it. Its connection pool lets later requests
 to the same host skip the TLS handshake.
 
-If you have a custom TLS connector service, including Schannel, pass it to
-`secure_connector`:
+With Schannel:
 
 ```rust,no_run
 #[cfg(windows)]
 fn client() -> ntex::client::Client {
-    use ntex::tls::schannel::{ClientConfig, TlsConnector};
+    use ntex::tls::schannel::ClientConfig;
     ntex::client::Client::builder()
-        .secure_connector(TlsConnector::with_config(ClientConfig::new()))
+        .schannel(ClientConfig::new())
         .build(ntex::SharedCfg::new("HTTPS"))
 }
 ```
+
+If you have a custom TLS connector service, pass it to `secure_connector`.
 
 `ClientBuilder::connector` configures **unsecured** connections. It leaves
 the HTTPS connector unchanged.
@@ -514,8 +528,8 @@ configuration above.
 
 The default rustls configuration uses webpki roots and sends no client identity.
 If you enable both backend features, the default HTTP client selects OpenSSL.
-On Windows without either feature, install Schannel explicitly through
-`secure_connector`.
+On Windows with `ntex/schannel`, the default HTTP client selects Schannel over
+both, verifying servers against the Windows trust store and the request host.
 
 The [HTTP client example][http-client-example] shows a custom HTTPS connector.
 The backend examples also show how to use private trust roots and client
@@ -557,8 +571,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 With rustls, set `config.alpn_protocols = vec![b"http/1.1".to_vec()]`.
 Then pass the configuration to `.rustls(Arc::new(config))`.
 
-With Schannel, restrict ALPN in `ClientConfig`. Pass the configuration to
-`.connector(TlsConnector::with_config(config))`.
+With Schannel, restrict ALPN with
+`ClientConfig::set_alpn_protocols(&["http/1.1"])` and pass the configuration to
+`.schannel(config)`.
 
 Unlike the HTTP client's `connector`, `WsClient::connector` replaces the whole
 connector for this connection, including its TLS behavior.
@@ -576,6 +591,8 @@ For web applications, use the backend-specific HTTP server helpers:
 | `bind_rustls` | address, `&ServerConfig`, shared configuration |
 | `listen_openssl` | existing listener, shared configuration, `SslAcceptorBuilder` |
 | `listen_rustls` | existing listener, shared configuration, `ServerConfig` |
+| `bind_schannel` | address, `&ServerConfig`, shared configuration (Windows, `ntex/schannel`) |
+| `listen_schannel` | existing listener, shared configuration, `ServerConfig` (Windows, `ntex/schannel`) |
 
 These helpers perform the TLS handshake before serving HTTP and configure
 HTTP ALPN for you. Keep your existing routes, middleware, and handlers.
@@ -584,15 +601,16 @@ A WebSocket connection starts as HTTP. Use an HTTPS listener and keep your
 upgrade and frame handlers. TLS stays in place after the upgrade;
 `web::ws::start` does not remove it.
 
-Use the lower-level server builder when you need Schannel, a custom protocol,
-or a certificate check before serving any requests. Compose the services in
+Use the lower-level server builder when you need a custom protocol or a
+certificate check before serving any requests. Compose the services in
 the order you want them to run:
 
 ```text
 listener -> TLS acceptor -> optional authorization gate -> HttpService / protocol service
 ```
 
-There is no `bind_schannel` web-server helper. The
+For an `HttpService`, the `http::openssl`, `http::rustls`, and
+`http::schannel` functions wrap it in the matching TLS acceptor. The
 [Schannel server][schannel-example] and both mutual-authentication examples
 show this service chain. Their HTTP service does not depend on the concrete
 TLS filter. They use a shared boxed error type to preserve errors from the

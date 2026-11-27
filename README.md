@@ -79,6 +79,8 @@ ntex = { version = "4", features = ["tokio"] }
 ## Optional features
 
 - `openssl` and `rustls` enable the corresponding TLS integrations.
+- `schannel` enables the Windows Schannel TLS integrations; it has no effect on
+  other platforms.
 - `compress` enables HTTP content compression (gzip, deflate and zstd).
 - `cookie` enables cookie support.
 - `ws` enables WebSocket APIs and is enabled by default.

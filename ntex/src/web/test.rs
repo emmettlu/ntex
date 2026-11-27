@@ -782,6 +782,8 @@ fn start_server(cfg: TestServerConfig, factory: AppFactory) -> TestServer {
         StreamType::Openssl(_) => true,
         #[cfg(feature = "rustls")]
         StreamType::Rustls(_) => true,
+        #[cfg(all(windows, feature = "schannel"))]
+        StreamType::Schannel(_) => true,
     };
 
     // run server in separate thread
@@ -804,6 +806,8 @@ fn start_server(cfg: TestServerConfig, factory: AppFactory) -> TestServer {
                 StreamType::Openssl(_) => true,
                 #[cfg(feature = "rustls")]
                 StreamType::Rustls(_) => true,
+                #[cfg(all(windows, feature = "schannel"))]
+                StreamType::Schannel(_) => true,
             };
             let c = cfg.srv_cfg.clone().unwrap_or_else(|| {
                 SharedCfg::new("WEB-SRV")
@@ -870,6 +874,27 @@ fn start_server(cfg: TestServerConfig, factory: AppFactory) -> TestServer {
                         )
                     }),
                 },
+                #[cfg(all(windows, feature = "schannel"))]
+                StreamType::Schannel(config) => match cfg.tp {
+                    HttpVer::Http1 => {
+                        let config = config.set_alpn_protocols(http::ALPN_PROTO_H1);
+                        builder.listen("test", tcp, c, async move |st| {
+                            http::schannel(config.clone(), HttpService::h1(factory(st).await))
+                        })
+                    }
+                    HttpVer::Http2 => {
+                        let config = config.set_alpn_protocols(http::ALPN_PROTO_H2);
+                        builder.listen("test", tcp, c, async move |st| {
+                            http::schannel(config.clone(), HttpService::h2(factory(st).await))
+                        })
+                    }
+                    HttpVer::Both => {
+                        let config = config.set_alpn_protocols(http::ALPN_PROTOS);
+                        builder.listen("test", tcp, c, async move |st| {
+                            http::schannel(config.clone(), HttpService::new(factory(st).await))
+                        })
+                    }
+                },
             }
             .unwrap()
             .run();
@@ -918,7 +943,14 @@ fn start_server(cfg: TestServerConfig, factory: AppFactory) -> TestServer {
                 .openssl(builder.build())
                 .build(cfg.clone())
         }
-        #[cfg(not(feature = "openssl"))]
+        #[cfg(all(not(feature = "openssl"), windows, feature = "schannel"))]
+        {
+            use crate::connect::schannel::ClientConfig;
+
+            let config = ClientConfig::new().danger_accept_invalid_certs(true);
+            Client::builder().schannel(config).build(cfg.clone())
+        }
+        #[cfg(not(any(feature = "openssl", all(windows, feature = "schannel"))))]
         {
             Client::builder().build(cfg.clone())
         }
@@ -963,6 +995,8 @@ enum StreamType {
     Openssl(tls_openssl::ssl::SslAcceptor),
     #[cfg(feature = "rustls")]
     Rustls(tls_rustls::ServerConfig),
+    #[cfg(all(windows, feature = "schannel"))]
+    Schannel(crate::server::schannel::ServerConfig),
 }
 
 impl fmt::Debug for StreamType {
@@ -973,6 +1007,8 @@ impl fmt::Debug for StreamType {
             StreamType::Openssl(_) => write!(f, "StreamType::Openssl"),
             #[cfg(feature = "rustls")]
             StreamType::Rustls(_) => write!(f, "StreamType::Rustls"),
+            #[cfg(all(windows, feature = "schannel"))]
+            StreamType::Schannel(_) => write!(f, "StreamType::Schannel"),
         }
     }
 }
@@ -1031,6 +1067,16 @@ impl TestServerConfig {
     #[cfg(feature = "rustls")]
     pub fn rustls(mut self, config: tls_rustls::ServerConfig) -> Self {
         self.stream = StreamType::Rustls(config);
+        self
+    }
+
+    #[must_use]
+    /// Start Windows Schannel server.
+    ///
+    /// ALPN is set according to the selected HTTP version.
+    #[cfg(all(windows, feature = "schannel"))]
+    pub fn schannel(mut self, config: crate::server::schannel::ServerConfig) -> Self {
+        self.stream = StreamType::Schannel(config);
         self
     }
 
@@ -1182,8 +1228,22 @@ impl TestServer {
                 .await
                 .map(WsConnection::seal);
         }
-        #[cfg(not(feature = "openssl"))]
-        assert!(!self.ssl, "openssl feature is required");
+        #[cfg(all(not(feature = "openssl"), windows, feature = "schannel"))]
+        if self.ssl {
+            use crate::connect::schannel::ClientConfig;
+
+            let config = ClientConfig::new()
+                .danger_accept_invalid_certs(true)
+                .set_alpn_protocols(&["http/1.1"]);
+
+            return WsClient::new(self.url(path), &self.cfg)
+                .schannel(config)
+                .connect()
+                .await
+                .map(WsConnection::seal);
+        }
+        #[cfg(not(any(feature = "openssl", all(windows, feature = "schannel"))))]
+        assert!(!self.ssl, "openssl or schannel feature is required");
 
         WsClient::new(self.url(path), &self.cfg)
             .connect()
@@ -1634,6 +1694,62 @@ mod tests {
     #[crate::rt_test]
     async fn test_server_openssl_ws() {
         let srv = server_with(config().h1().openssl(ssl_acceptor(false)), async |()| {
+            App::new().service(
+                web::resource("/").route(web::to(async |req: web::HttpRequest| {
+                    let _ = web::ws::start(&req, None, async |_: web::ws::Frame| {
+                        Ok::<_, io::Error>(None)
+                    })
+                    .await;
+                })),
+            )
+        });
+        assert!(srv.ws().await.is_ok());
+    }
+
+    #[cfg(all(windows, feature = "schannel"))]
+    fn schannel_config() -> crate::server::schannel::ServerConfig {
+        use crate::server::schannel::{Certificate, ServerConfig};
+
+        // `tests/cert.pem` and `tests/key.pem`
+        let pfx = include_bytes!("../../tests/identity.pfx");
+        ServerConfig::new(Certificate::from_pkcs12(pfx, "ntex").unwrap()).unwrap()
+    }
+
+    /// STATEMENT: Schannel test servers expose HTTPS URLs and negotiate the configured HTTP protocol.
+    ///
+    /// HOW:
+    /// - Start HTTP/1-only, HTTP/2-only, and automatic Schannel servers.
+    /// - Assert Schannel debug identity, HTTPS URL scheme, OK status, and the expected response version.
+    #[cfg(all(windows, feature = "schannel"))]
+    #[crate::rt_test]
+    async fn test_server_schannel() {
+        for (cfg, version) in [
+            (config().h1(), http::Version::HTTP_11),
+            (config().h2(), http::Version::HTTP_2),
+            (config(), http::Version::HTTP_2),
+        ] {
+            let cfg = cfg.schannel(schannel_config());
+            assert!(format!("{cfg:?}").contains("StreamType::Schannel"));
+
+            let srv = server_with(cfg, async |()| {
+                App::new().service(web::resource("/").to(async || HttpResponse::Ok()))
+            });
+            assert!(srv.url("/").starts_with("https://"));
+            let res = srv.get("/").send().await.unwrap();
+            assert_eq!(res.status(), StatusCode::OK);
+            assert_eq!(res.version(), version);
+        }
+    }
+
+    /// STATEMENT: The test-server WebSocket helper connects to a Schannel-backed upgrade handler.
+    ///
+    /// HOW:
+    /// - Start a TLS HTTP/1 Schannel server whose root handler calls `web::ws::start`.
+    /// - Await `srv.ws()` and assert the connection succeeds.
+    #[cfg(all(windows, feature = "schannel", feature = "ws"))]
+    #[crate::rt_test]
+    async fn test_server_schannel_ws() {
+        let srv = server_with(config().h1().schannel(schannel_config()), async |()| {
             App::new().service(
                 web::resource("/").route(web::to(async |req: web::HttpRequest| {
                     let _ = web::ws::start(&req, None, async |_: web::ws::Frame| {

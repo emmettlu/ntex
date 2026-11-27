@@ -8,7 +8,7 @@ use tls_openssl::ssl::SslAcceptorBuilder;
 mod rustls_utils;
 
 use ntex::http::HttpServiceConfig;
-#[cfg(feature = "openssl")]
+#[cfg(any(feature = "openssl", all(windows, feature = "schannel")))]
 use ntex::web::WebAppConfig;
 use ntex::web::{self, App, HttpResponse, HttpServer};
 use ntex::{SharedCfg, io::IoConfig, server::Affinity, server::TestServer, time::Seconds};
@@ -589,6 +589,128 @@ async fn test_listen_rustls() {
     let client = client().await;
     let response = client.get(format!("https://{addr}")).send().await.unwrap();
     assert!(response.status().is_success());
+
+    srv.stop(false).await;
+    thread::sleep(Duration::from_millis(25));
+    sys.stop();
+}
+
+#[cfg(all(windows, feature = "schannel"))]
+fn schannel_config() -> ntex::server::schannel::ServerConfig {
+    use ntex::server::schannel::{Certificate, ServerConfig};
+
+    // `cert.pem` and `key.pem`
+    let cert = Certificate::from_pkcs12(include_bytes!("identity.pfx"), "ntex").unwrap();
+    ServerConfig::new(cert).unwrap()
+}
+
+#[cfg(all(windows, feature = "schannel"))]
+fn schannel_client() -> ntex::client::Client {
+    use ntex::connect::schannel::ClientConfig;
+
+    ntex::client::Client::builder()
+        .schannel(ClientConfig::new().danger_accept_invalid_certs(true))
+        .build(
+            SharedCfg::new("TEST")
+                .add(IoConfig::new().set_connect_timeout(30))
+                .add(ntex::client::ClientConfig::new().set_response_timeout(Seconds(30))),
+        )
+}
+
+/// STATEMENT: A Schannel-bound `HttpServer` exposes secure app configuration to handlers.
+///
+/// HOW:
+/// - Start `bind_schannel` with secure app configuration and assert `req.app_config().secure()` in the route.
+/// - Send HTTPS GET with the Schannel client, assert success and HTTP/2, and stop the server.
+#[ntex::test]
+#[cfg(all(windows, feature = "schannel"))]
+async fn test_bind_schannel() {
+    use ntex::web::HttpRequest;
+
+    let addr = TestServer::unused_addr();
+    let (tx, rx) = mpsc::channel();
+
+    thread::spawn(move || {
+        let sys = ntex::rt::System::new("test", ntex::rt::DefaultRuntime);
+        let config = schannel_config();
+
+        sys.run(move || {
+            let srv = HttpServer::new(async |_| {
+                App::new().service(web::resource("/").route(web::to(async |req: HttpRequest| {
+                    assert!(req.app_config().secure());
+                    HttpResponse::Ok().body("test")
+                })))
+            })
+            .workers(1)
+            .graceful_shutdown_timeout(Seconds(1))
+            .stop_runtime()
+            .disable_signals()
+            .bind_schannel(
+                format!("{addr}"),
+                &config,
+                SharedCfg::new("WEB").add(WebAppConfig::new().set_secure()),
+            )
+            .unwrap()
+            .run();
+            let _ = tx.send((srv, ntex::rt::System::current()));
+            Ok(())
+        })
+    });
+    let (srv, sys) = rx.recv().unwrap();
+
+    let client = schannel_client();
+    let host = format!("https://localhost:{}", addr.port());
+    let response = client.get(host).send().await.unwrap();
+    assert!(response.status().is_success());
+    assert_eq!(response.version(), ntex::http::Version::HTTP_2);
+
+    srv.stop(false).await;
+    thread::sleep(Duration::from_millis(25));
+    sys.stop();
+}
+
+/// STATEMENT: `HttpServer::listen_schannel` serves HTTPS from a supplied TCP listener.
+///
+/// HOW:
+/// - Start a Schannel server using an existing listener and a configuration whose ALPN only offers HTTP/1.1.
+/// - Send HTTPS GET with the Schannel client, assert success and that `listen_schannel` restored HTTP/2 ALPN.
+#[ntex::test]
+#[cfg(all(windows, feature = "schannel"))]
+async fn test_listen_schannel() {
+    let lst = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = lst.local_addr().unwrap();
+    let (tx, rx) = mpsc::channel();
+
+    thread::spawn(move || {
+        let sys = ntex::rt::System::new("test", ntex::rt::DefaultRuntime);
+        let config = schannel_config().set_alpn_protocols(&["http/1.1"]);
+
+        sys.run(move || {
+            let srv = HttpServer::new(async |_| {
+                App::new().service(
+                    web::resource("/").route(web::to(async || HttpResponse::Ok().body("test"))),
+                )
+            })
+            .workers(1)
+            .stop_runtime()
+            .disable_signals()
+            .listen_schannel(lst, SharedCfg::default(), config)
+            .unwrap()
+            .run();
+            let _ = tx.send((srv, ntex::rt::System::current()));
+            Ok(())
+        })
+    });
+    let (srv, sys) = rx.recv().unwrap();
+
+    let client = schannel_client();
+    let response = client
+        .get(format!("https://localhost:{}", addr.port()))
+        .send()
+        .await
+        .unwrap();
+    assert!(response.status().is_success());
+    assert_eq!(response.version(), ntex::http::Version::HTTP_2);
 
     srv.stop(false).await;
     thread::sleep(Duration::from_millis(25));

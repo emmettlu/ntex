@@ -11,6 +11,9 @@ use crate::connect::rustls::{TlsClientFilter, TlsConnector};
 #[cfg(feature = "rustls")]
 use tls_rustls::ClientConfig as RustlsClientConfig;
 
+#[cfg(all(windows, feature = "schannel"))]
+use crate::connect::schannel;
+
 use base64::{Engine, engine::general_purpose::STANDARD as base64};
 use urly::Url;
 
@@ -142,6 +145,18 @@ impl<F> WsClient<F> {
         config: std::sync::Arc<RustlsClientConfig>,
     ) -> WsClient<Layer<TlsClientFilter>> {
         self.connector(TlsConnector::from(config))
+    }
+
+    #[cfg(all(windows, feature = "schannel"))]
+    /// Uses the supplied Windows Schannel configuration for secure connections.
+    ///
+    /// WebSocket upgrades require HTTP/1.1; restrict the configuration's ALPN
+    /// with `set_alpn_protocols(&["http/1.1"])` if the server may select `h2`.
+    pub fn schannel(
+        self,
+        config: schannel::ClientConfig,
+    ) -> WsClient<Layer<schannel::SchannelFilter>> {
+        self.connector(schannel::TlsConnector::with_config(config))
     }
 }
 

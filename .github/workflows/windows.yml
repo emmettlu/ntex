@@ -63,20 +63,30 @@ jobs:
       - name: Clippy (neon)
         if: matrix.version == 'stable'
         run: |
-          cargo clippy --all --no-default-features --features="ntex/cookie,ntex/compress,ntex/openssl,ntex/rustls,ntex/ws"
+          cargo clippy --all --no-default-features --features="ntex/cookie,ntex/compress,ntex/openssl,ntex/rustls,ntex/schannel,ntex/ws"
+
+      - name: Clippy (schannel only)
+        if: matrix.version == 'stable'
+        run: |
+          cargo clippy -p ntex --no-default-features --features="ntex/cookie,ntex/compress,ntex/schannel,ntex/ws"
+
+      - name: Run tests (schannel only)
+        timeout-minutes: 10
+        run: |
+          cargo nextest run --retries=3 -p ntex --no-default-features --no-fail-fast --features="ntex/cookie,ntex/compress,ntex/schannel,ntex/ws"
 
       - name: Run tests (neon)
         timeout-minutes: 10
         run: |
-          cargo nextest run --retries=3 --all --no-default-features --no-fail-fast --features="ntex/cookie,ntex/compress,ntex/openssl,ntex/rustls,ntex/ws"
+          cargo nextest run --retries=3 --all --no-default-features --no-fail-fast --features="ntex/cookie,ntex/compress,ntex/openssl,ntex/rustls,ntex/schannel,ntex/ws"
 
       - name: Run tests (tokio)
         timeout-minutes: 10
         run: |
-          cargo nextest run --retries=3 --all --no-default-features --no-fail-fast --features="ntex/tokio,ntex/cookie,ntex/compress,ntex/openssl,ntex/rustls,ntex/ws"
+          cargo nextest run --retries=3 --all --no-default-features --no-fail-fast --features="ntex/tokio,ntex/cookie,ntex/compress,ntex/openssl,ntex/rustls,ntex/schannel,ntex/ws"
 
       - name: Run tests (compio)
         if: matrix.version == 'stable'
         timeout-minutes: 10
         run: |
-          cargo nextest run --retries=3 --all --no-default-features --no-fail-fast --features="ntex/compio,ntex/cookie,ntex/compress,ntex/openssl,ntex/rustls,ntex/ws"
+          cargo nextest run --retries=3 --all --no-default-features --no-fail-fast --features="ntex/compio,ntex/cookie,ntex/compress,ntex/openssl,ntex/rustls,ntex/schannel,ntex/ws"

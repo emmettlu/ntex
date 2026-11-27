@@ -56,7 +56,11 @@ pub struct HeaderItem {
 
 #[cfg(feature = "openssl")]
 use crate::server::openssl::{SslAcceptor, SslFilter};
-#[cfg(any(feature = "openssl", feature = "rustls"))]
+#[cfg(any(
+    feature = "openssl",
+    feature = "rustls",
+    all(windows, feature = "schannel")
+))]
 use crate::{IntoService, Service, io::Filter, io::Io, io::Layer, server::TlsError};
 
 #[cfg(feature = "openssl")]
@@ -103,6 +107,28 @@ where
     }
 
     TlsAcceptor::new(std::sync::Arc::new(config))
+        .map_err(TlsError::Tls)
+        .and_then(service.into_service().map_err(TlsError::Service))
+}
+
+#[cfg(all(windows, feature = "schannel"))]
+/// Wraps an HTTP service in a Windows Schannel TLS acceptor.
+///
+/// ALPN behavior comes from the supplied `config`, which accepts `h2` and
+/// `http/1.1` by default; use
+/// [`ServerConfig::set_alpn_protocols`](crate::server::schannel::ServerConfig::set_alpn_protocols)
+/// with [`ALPN_PROTO_H1`], [`ALPN_PROTO_H2`], or [`ALPN_PROTOS`] to change it.
+/// TLS failures and inner-service failures are mapped to the corresponding
+/// [`TlsError`] variants.
+pub fn schannel<F, S, St>(
+    config: crate::server::schannel::ServerConfig,
+    service: impl IntoService<S, St, Io<Layer<crate::server::schannel::SchannelFilter, F>>>,
+) -> impl Service<St, Io<F>, Res = S::Res, Error = TlsError<S::Error>>
+where
+    F: Filter,
+    S: Service<St, Io<Layer<crate::server::schannel::SchannelFilter, F>>>,
+{
+    crate::server::schannel::TlsAcceptor::new(config)
         .map_err(TlsError::Tls)
         .and_then(service.into_service().map_err(TlsError::Service))
 }

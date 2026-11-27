@@ -37,6 +37,9 @@ openssl = ["tls_openssl", "ntex-tls/openssl"]
 # rustls support
 rustls = ["tls_rustls", "webpki-roots", "ntex-tls/rustls"]
 
+# Windows Schannel support, no-op on other platforms
+schannel = ["ntex-tls/schannel"]
+
 # enable compression support
 compress = ["flate2", "zstd"]
 
@@ -134,6 +137,3 @@ tls_openssl = { workspace = true }
 tls_rustls = { workspace = true, features = ["ring", "std"] }
 rustls-pemfile = { workspace = true }
 webpki-roots = { workspace = true }
-
-[target.'cfg(windows)'.dev-dependencies]
-ntex-tls = { workspace = true, features = ["schannel"] }

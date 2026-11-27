@@ -1,6 +1,8 @@
 //! TLS services and I/O filters backed by Windows Schannel.
 //!
-//! Available on Windows with the `schannel` feature. [`TlsAcceptor`] and
+//! Always available on Windows; this crate's `schannel` feature is kept for
+//! compatibility. Enable `ntex/schannel` for the `ntex` HTTP client, WebSocket
+//! client, and web-server integrations. [`TlsAcceptor`] and
 //! [`TlsConnector`] apply [`crate::TlsConfig`] to service handshakes; the free
 //! [`accept()`] and [`connect()`] functions do not impose a timeout or concurrency
 //! limit. All entry points preserve existing I/O filters below TLS.

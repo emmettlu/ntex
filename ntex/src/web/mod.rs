@@ -42,7 +42,7 @@
 //! - WebSocket clients and servers
 //! - Transparent zstd, gzip, and deflate content encoding
 //! - Configurable request routing
-//! - TLS through OpenSSL or rustls
+//! - TLS through OpenSSL, rustls, or Windows Schannel
 //! - Composable middleware
 //!
 //! ## Crate features
@@ -52,6 +52,7 @@
 //!   decompression.
 //! - `openssl` enables TLS support through OpenSSL.
 //! - `rustls` enables TLS support through rustls.
+//! - `schannel` enables TLS support through Windows Schannel (Windows only).
 //! - `ws` enables the [`ws`] module.
 #![allow(clippy::unused_async_trait_impl, clippy::mismatching_type_param_order)]
 mod app;

@@ -459,11 +459,11 @@ async fn test_rustls_accept_handshake_then_eof() {
 /// HOW:
 /// - Connect using a `localhost` string address and assert `PeerAddr`, `HttpProtocol::Http1`, and the certificate DER bytes.
 /// - Send `test` and assert the echoed payload matches.
-#[cfg(all(windows, feature = "openssl"))]
+#[cfg(all(windows, feature = "schannel", feature = "openssl"))]
 #[ntex::test]
 async fn test_schannel_string() {
+    use ntex::connect::schannel::{ClientConfig, PeerCert, TlsConnector};
     use ntex::{io::types::HttpProtocol, server::openssl};
-    use ntex_tls::schannel::{ClientConfig, PeerCert, TlsConnector};
     use tls_openssl::x509::X509;
 
     let srv = test_server(async |_| {
@@ -493,6 +493,48 @@ async fn test_schannel_string() {
         io.query::<PeerCert>().as_ref().unwrap().0,
         cert.to_der().unwrap()
     );
+    io.send(Bytes::from_static(b"test"), &BytesCodec)
+        .await
+        .unwrap();
+    let item = io.recv(&BytesCodec).await.unwrap().unwrap();
+    assert_eq!(item, Bytes::from_static(b"test"));
+}
+
+/// STATEMENT: The Schannel connector and acceptor exchange data and expose the server certificate.
+///
+/// HOW:
+/// - Start a Schannel echo server through `ntex::server::schannel` and connect with `ntex::connect::schannel`.
+/// - Assert `PeerAddr` and the server certificate DER, send `test`, and assert the echoed payload matches.
+#[cfg(all(windows, feature = "schannel"))]
+#[ntex::test]
+async fn test_schannel_to_schannel() {
+    use ntex::connect::schannel::{ClientConfig, PeerCert, TlsConnector};
+    use ntex::server::schannel::{Certificate, ServerConfig, TlsAcceptor};
+
+    let der = Certificate::from_pkcs12(include_bytes!("identity.pfx"), "ntex")
+        .unwrap()
+        .der()
+        .to_vec();
+
+    let srv = test_server(async |_| {
+        let cert = Certificate::from_pkcs12(include_bytes!("identity.pfx"), "ntex").unwrap();
+        let config = ServerConfig::new(cert).unwrap();
+        service(TlsAcceptor::new(config)).and_then(async move |io: Io<_>| {
+            let item = io.recv(&BytesCodec).await.unwrap().unwrap();
+            io.send(item, &BytesCodec).await.unwrap();
+            Ok::<_, io::Error>(())
+        })
+    });
+
+    let conn = Pipeline::new(
+        SharedCfg::new("CLIENT").into(),
+        TlsConnector::with_config(ClientConfig::new().danger_accept_invalid_certs(true)),
+    );
+    let addr = format!("localhost:{}", srv.addr().port());
+    let io = conn.call(addr.into()).await.unwrap();
+    assert_eq!(io.query::<PeerAddr>().get().unwrap(), srv.addr().into());
+    assert_eq!(io.query::<PeerCert>().as_ref().unwrap().0, der);
+
     io.send(Bytes::from_static(b"test"), &BytesCodec)
         .await
         .unwrap();

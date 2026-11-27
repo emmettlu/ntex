@@ -409,7 +409,14 @@ impl TestServer {
                 .map_err(|e| log::error!("Cannot set alpn protocol: {e:?}"));
             Client::builder().openssl(builder.build()).build(cfg)
         }
-        #[cfg(not(feature = "openssl"))]
+        #[cfg(all(not(feature = "openssl"), windows, feature = "schannel"))]
+        {
+            use crate::connect::schannel::ClientConfig;
+
+            let config = ClientConfig::new().danger_accept_invalid_certs(true);
+            Client::builder().schannel(config).build(cfg)
+        }
+        #[cfg(not(any(feature = "openssl", all(windows, feature = "schannel"))))]
         {
             Client::builder().build(cfg)
         }
@@ -503,6 +510,48 @@ impl TestServer {
 
         WsClient::new(self.url(path), &self.cfg)
             .openssl(builder.build())
+            .connect()
+            .await
+    }
+
+    #[cfg(all(
+        not(feature = "openssl"),
+        windows,
+        feature = "schannel",
+        feature = "ws"
+    ))]
+    /// Connect to a websocket server
+    pub async fn wss(
+        &self,
+    ) -> Result<
+        WsConnection<crate::io::Layer<crate::connect::schannel::SchannelFilter>>,
+        Error<WsClientError>,
+    > {
+        self.wss_at("/").await
+    }
+
+    #[cfg(all(
+        not(feature = "openssl"),
+        windows,
+        feature = "schannel",
+        feature = "ws"
+    ))]
+    /// Connect to secure websocket server at a given path
+    pub async fn wss_at(
+        &self,
+        path: &str,
+    ) -> Result<
+        WsConnection<crate::io::Layer<crate::connect::schannel::SchannelFilter>>,
+        Error<WsClientError>,
+    > {
+        use crate::connect::schannel::ClientConfig;
+
+        let config = ClientConfig::new()
+            .danger_accept_invalid_certs(true)
+            .set_alpn_protocols(&["http/1.1"]);
+
+        WsClient::new(self.url(path), &self.cfg)
+            .schannel(config)
             .connect()
             .await
     }

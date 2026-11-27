@@ -2,6 +2,14 @@
 
 ## [4.11.1] - 2026-11-27
 
+* Add the `schannel` feature, enabling Windows Schannel TLS integrations:
+  `http::schannel()`, `HttpServer::bind_schannel()` and `listen_schannel()`,
+  `ClientBuilder::schannel()`, `WsClient::schannel()`,
+  `connect::schannel` and `server::schannel` re-exports, and Schannel support
+  in the `http::test` and `web::test` servers. On Windows the default HTTP
+  client uses Schannel when the feature is enabled. The feature has no effect
+  on other platforms
+
 * ws: `hash_key()` computes the `Sec-WebSocket-Accept` value about 3x faster
 
 * client: Connections being opened count against the HTTP/1 connection limit,

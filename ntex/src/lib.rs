@@ -30,6 +30,8 @@
 //! - `ws` (default) enables WebSocket support.
 //! - `openssl` enables TLS support through OpenSSL.
 //! - `rustls` enables TLS support through rustls.
+//! - `schannel` enables TLS support through Windows Schannel. It has no effect
+//!   on other platforms.
 //! - `compress` enables HTTP content compression and decompression (gzip,
 //!   deflate and zstd).
 //! - `cookie` enables HTTP cookie support.
@@ -101,6 +103,12 @@ pub mod connect {
         //! TLS connector support through rustls.
         pub use ntex_tls::rustls::*;
     }
+
+    #[cfg(all(windows, feature = "schannel"))]
+    pub mod schannel {
+        //! TLS connector support through Windows Schannel.
+        pub use ntex_tls::schannel::*;
+    }
 }
 
 pub mod router {
@@ -129,6 +137,9 @@ pub mod server {
 
     #[cfg(feature = "rustls")]
     pub use ntex_tls::rustls;
+
+    #[cfg(all(windows, feature = "schannel"))]
+    pub use ntex_tls::schannel;
 
     pub use ntex_tls::{TlsConfig, TlsError};
 }

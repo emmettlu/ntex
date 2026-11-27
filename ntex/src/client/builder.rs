@@ -16,6 +16,9 @@ use tls_openssl::ssl::SslConnector as OpensslConnector;
 #[cfg(feature = "rustls")]
 use tls_rustls::ClientConfig as RustlsClientConfig;
 
+#[cfg(all(windows, feature = "schannel"))]
+use crate::connect::schannel::ClientConfig as SchannelClientConfig;
+
 /// An HTTP client builder.
 ///
 /// This type configures connectors and middleware before constructing a
@@ -39,14 +42,18 @@ impl ClientBuilder<Identity> {
     ///
     /// # TLS defaults
     ///
-    /// With the `openssl` feature enabled (it takes precedence over `rustls`),
+    /// On Windows with the `schannel` feature enabled (it takes precedence over
+    /// `openssl` and `rustls`), HTTPS connections are verified by Schannel
+    /// against the Windows trust store and the request host. Otherwise, with
+    /// the `openssl` feature enabled (it takes precedence over `rustls`),
     /// HTTPS connections verify the peer certificate against OpenSSL's default
     /// trust store (the system roots) and check that it matches the request
     /// host. With only the `rustls` feature, peers are verified against the
-    /// bundled `webpki-roots`. Without either feature, HTTPS is unavailable.
+    /// bundled `webpki-roots`. Without any of these features, HTTPS is
+    /// unavailable.
     ///
     /// To trust private roots, or to skip verification for testing, pass your
-    /// own configuration to `openssl()`, `rustls()` or
+    /// own configuration to `openssl()`, `rustls()`, `schannel()` or
     /// [`secure_connector`](Self::secure_connector).
     pub fn new() -> Self {
         let svc = ConnectorPipeline::new(
@@ -63,7 +70,11 @@ impl ClientBuilder<Identity> {
             middleware: Identity,
         };
 
-        #[cfg(feature = "openssl")]
+        #[cfg(all(windows, feature = "schannel"))]
+        {
+            builder.schannel(SchannelClientConfig::new())
+        }
+        #[cfg(all(feature = "openssl", not(all(windows, feature = "schannel"))))]
         {
             use tls_openssl::ssl::SslMethod;
 
@@ -74,7 +85,11 @@ impl ClientBuilder<Identity> {
 
             builder.openssl(ssl.build())
         }
-        #[cfg(all(not(feature = "openssl"), feature = "rustls"))]
+        #[cfg(all(
+            not(feature = "openssl"),
+            feature = "rustls",
+            not(all(windows, feature = "schannel"))
+        ))]
         {
             use tls_rustls::RootCertStore;
 
@@ -89,7 +104,11 @@ impl ClientBuilder<Identity> {
             config.alpn_protocols = protos;
             builder.rustls(config)
         }
-        #[cfg(not(any(feature = "openssl", feature = "rustls")))]
+        #[cfg(not(any(
+            feature = "openssl",
+            feature = "rustls",
+            all(windows, feature = "schannel")
+        )))]
         {
             builder
         }
@@ -118,6 +137,20 @@ impl<M> ClientBuilder<M> {
         use crate::connect::rustls::TlsConnector;
 
         self.secure_connector(TlsConnector::new(config))
+    }
+
+    #[must_use]
+    #[cfg(all(windows, feature = "schannel"))]
+    /// Uses a Windows Schannel connector for secure connections.
+    ///
+    /// Server certificate and host name verification follow the configuration,
+    /// enabled unless
+    /// [`danger_accept_invalid_certs`](SchannelClientConfig::danger_accept_invalid_certs)
+    /// disables them. The default configuration offers `h2` and `http/1.1`.
+    pub fn schannel(self, config: SchannelClientConfig) -> Self {
+        use crate::connect::schannel::TlsConnector;
+
+        self.secure_connector(TlsConnector::with_config(config))
     }
 
     #[must_use]
